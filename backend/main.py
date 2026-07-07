@@ -8,11 +8,9 @@ from typing import List, Optional
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# Load the secret API key from the .env file
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Configure Gemini if the key exists
 if API_KEY:
     genai.configure(api_key=API_KEY)
 
@@ -26,11 +24,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- PYDANTIC MODELS (The JSON Blueprint) ---
+# --- PYDANTIC MODELS ---
 class DrawingMeta(BaseModel):
     drawing_no: str
     revision: str
     line_number: str
+    size: Optional[str] = None           # ADDED
+    material_class: Optional[str] = None # ADDED
 
 class MTORow(BaseModel):
     item_no: int
@@ -51,66 +51,55 @@ class MTOResponse(BaseModel):
     drawing_meta: Optional[DrawingMeta] = None
     items: List[MTORow] = []
 
-# --- THE MOCK PIPELINE (Fallback) ---
+# --- MOCK PIPELINE ---
 def mock_gemini_extraction() -> MTOResponse:
-    """Returns fake data if no API key is found (Assessment Requirement)."""
     print("WARNING: No API key found. Using Mock Pipeline.")
     time.sleep(2)
     return MTOResponse(
-        drawing_meta=DrawingMeta(drawing_no="ISO-MOCK-01", revision="1", line_number="6\"-MOCK-LINE"),
+        is_valid=True,
+        drawing_meta=DrawingMeta(drawing_no="ISO-MOCK-01", revision="1", line_number="6\"-MOCK-LINE", size="6\"", material_class="A1A"),
         items=[
-            MTORow(item_no=1, category="PIPE", description="Seamless Pipe", size_nps="6\"", quantity=12, unit="M"),
+            MTORow(item_no=1, category="PIPE", description="Seamless Pipe", size_nps="6\"", quantity=None, length_m=12.5, unit="M"),
             MTORow(item_no=2, category="FITTING", description="90 Deg Elbow", size_nps="6\"", quantity=4, unit="EA")
         ]
     )
 
-# --- THE REAL AI PIPELINE ---
+# --- AI PIPELINE ---
 def extract_mto_with_ai(file_bytes: bytes, mime_type: str) -> MTOResponse:
-    """Sends the image to Gemini and forces it to reply in our exact JSON structure."""
-    
-    # We use 1.5-flash as it is lightning fast for vision tasks and widely available
     model = genai.GenerativeModel('gemini-2.5-flash')
     
-    # 1. THE PROMPT (Updated with Dynamic Error Diagnosis)
     prompt = """
     You are an expert Piping Design Quality Engineer. Look at the uploaded image.
 
     STEP 1: VALIDATION & QUALITY CHECK
-    First, evaluate the image quality and content. If the extraction cannot be reliably performed, you must abort and set "is_valid": false. 
-    You MUST provide a specific, single-line "error_message" explaining exactly why it failed. Choose the most appropriate error from this list:
+    Determine if the image is a valid piping isometric drawing. If not, abort and return "is_valid": false with one of these errors:
     - "Error: The uploaded image is not a piping isometric or P&ID drawing."
     - "Error: The image resolution is too low or blurry to accurately read text and symbols."
     - "Error: The drawing lacks clear item numbers (piece marks) required to build an MTO."
-    - "Error: The drawing is missing critical nominal pipe sizes (NPS) or dimension data."
-    - "Error: The component symbols are non-standard or too ambiguous to perform a reliable extraction."
 
-    If any of those failure conditions are met, return ONLY this JSON structure and stop:
-    {
-        "is_valid": false,
-        "error_message": "<Insert the specific 1-line error message from above>",
-        "drawing_meta": null,
-        "items": []
-    }
+    STEP 2: EXTRACTION RULES
+    Extract the title block metadata (drawing no, revision, line number, size, material class).
+    Extract the MTO based on these categories:
+    - PIPE: Straight segments. Unit: 'M' (summed length).
+    - FITTING: Elbows, Tees, Reducers, Caps, Olets. Unit: 'EA'.
+    - FLANGE: WN, SO, BL, SW. Unit: 'EA'.
+    - VALVE: Gate, Globe, Check, Ball, Butterfly. Unit: 'EA'.
+    - GASKET: 1 per flanged joint. Unit: 'EA'.
+    - BOLT: 1 set per flanged joint. Unit: 'SET'.
+    - SUPPORT: Shoes, guides, anchors. Unit: 'EA'.
+    - WELD: Butt welds / Field Welds (FW). Unit: 'EA'.
+    - INSTRUMENT: Tappings. Unit: 'EA'.
 
-    STEP 2: EXTRACTION
-    If the image IS a valid, readable piping drawing, generate a Material Take-Off (MTO) bill of materials using these rules:
-    - PIPE: Straight segments. Quantified by summed length in Metres ('M').
-    - FITTINGS: Elbows (90/45 deg), Tees (equal/reducing), Reducers, Caps, Olets. Quantified by count ('EA').
-    - FLANGES: Weld-neck (WN), Slip-on (SO), Blind (BL), Socket-weld (SW). Quantified by count ('EA').
-    - VALVES: Gate (bowtie), Globe (bowtie with dot), Check (bowtie with flap), Ball (bowtie with circle). Quantified by count ('EA').
-    - JOINT CONSUMABLES: Every flanged joint implies 1 Gasket and 1 set of Stud bolts. Derive these.
-    - SUPPORTS: Shoes, guides, anchors. Quantified by count ('EA').
-    
-    Standards & Materials Vocabulary:
-    - Standards: ASME B31.3, ASME B16.9, ASME B16.5, ASME B16.11, ASME B16.20.
-    - Materials: ASTM A106 Gr.B, A234 WPB, A105, A312 TP316L, A182 F316L.
-    - Sizes: NPS and Schedule (SCH 10/40/80/160, STD/XS/XXS).
+    Standards Vocabulary to use in descriptions:
+    - ASME B31.3, ASME B16.9, ASME B16.5, ASME B16.11, ASME B16.20
+    - ASTM A106 Gr.B, A234 WPB, A105, A312 TP316L, A182 F316L
+    - NPS, SCH 10/40/80/160, STD/XS/XXS
 
-    For valid drawings, you must return ONLY a raw JSON object that strictly matches this exact structure, with no markdown formatting:
+    Return ONLY raw JSON matching this structure exactly:
     {
         "is_valid": true,
         "error_message": null,
-        "drawing_meta": {"drawing_no": "...", "revision": "...", "line_number": "..."},
+        "drawing_meta": {"drawing_no": "...", "revision": "...", "line_number": "...", "size": "...", "material_class": "..."},
         "items": [
             {
                 "item_no": 1, 
@@ -130,47 +119,27 @@ def extract_mto_with_ai(file_bytes: bytes, mime_type: str) -> MTOResponse:
     """
     
     try:
-        # 2. Call the AI
         response = model.generate_content(
-            contents=[
-                {"mime_type": mime_type, "data": file_bytes}, 
-                prompt
-            ],
-            # This config strictly forces the AI to reply in JSON format
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json"
-            )
+            contents=[{"mime_type": mime_type, "data": file_bytes}, prompt],
+            generation_config=genai.GenerationConfig(response_mime_type="application/json")
         )
-        
-        # 3. Convert the AI's text response into our strict Python/Pydantic structure
-        raw_json = json.loads(response.text)
-        return MTOResponse(**raw_json)
-        
+        return MTOResponse(**json.loads(response.text))
     except Exception as e:
-        print(f"AI Extraction Failed: {e}")
-        # If the AI hallucinates or fails, gracefully fall back to the mock data
+        print(f"AI Failed: {e}")
         return mock_gemini_extraction()
 
-# --- THE API ENDPOINT ---
+# --- ENDPOINT ---
 @app.post("/api/upload", response_model=MTOResponse)
 async def upload_drawing(file: UploadFile = File(...)):
-    
     if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.pdf')):
         raise HTTPException(status_code=400, detail="Invalid file type.")
         
     file_bytes = await file.read()
-    
-    # Enforce a 20MB file size limit
     if len(file_bytes) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large. Max 20MB.")
     
-    # Determine the mime type for Gemini
     mime_type = "application/pdf" if file.filename.lower().endswith('.pdf') else "image/jpeg"
     
-    # Assessment Requirement: Graceful Degradation. 
-    # If API key exists, use AI. If not, use mock data.
     if API_KEY and API_KEY.strip() != "":
-        print("API Key found! Sending to Gemini...")
         return extract_mto_with_ai(file_bytes, mime_type)
-    else:
-        return mock_gemini_extraction()
+    return mock_gemini_extraction()
