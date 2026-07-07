@@ -71,22 +71,29 @@ def extract_mto_with_ai(file_bytes: bytes, mime_type: str) -> MTOResponse:
     # We use 1.5-flash as it is lightning fast for vision tasks and widely available
     model = genai.GenerativeModel('gemini-2.5-flash')
     
-    # 1. THE PROMPT (Updated with Gatekeeper Validation)
+    # 1. THE PROMPT (Updated with Dynamic Error Diagnosis)
     prompt = """
     You are an expert Piping Design Quality Engineer. Look at the uploaded image.
 
-    STEP 1: VALIDATION
-    First, determine if the image is actually a piping isometric drawing or P&ID. 
-    If it is NOT a valid piping drawing (e.g., a random photo, a person, a landscape), you must abort extraction and return this exact JSON:
+    STEP 1: VALIDATION & QUALITY CHECK
+    First, evaluate the image quality and content. If the extraction cannot be reliably performed, you must abort and set "is_valid": false. 
+    You MUST provide a specific, single-line "error_message" explaining exactly why it failed. Choose the most appropriate error from this list:
+    - "Error: The uploaded image is not a piping isometric or P&ID drawing."
+    - "Error: The image resolution is too low or blurry to accurately read text and symbols."
+    - "Error: The drawing lacks clear item numbers (piece marks) required to build an MTO."
+    - "Error: The drawing is missing critical nominal pipe sizes (NPS) or dimension data."
+    - "Error: The component symbols are non-standard or too ambiguous to perform a reliable extraction."
+
+    If any of those failure conditions are met, return ONLY this JSON structure and stop:
     {
         "is_valid": false,
-        "error_message": "Invalid file: The uploaded image does not appear to be a piping isometric drawing.",
+        "error_message": "<Insert the specific 1-line error message from above>",
         "drawing_meta": null,
         "items": []
     }
 
     STEP 2: EXTRACTION
-    If the image IS a valid piping drawing, generate a Material Take-Off (MTO) bill of materials using these rules:
+    If the image IS a valid, readable piping drawing, generate a Material Take-Off (MTO) bill of materials using these rules:
     - PIPE: Straight segments. Quantified by summed length in Metres ('M').
     - FITTINGS: Elbows (90/45 deg), Tees (equal/reducing), Reducers, Caps, Olets. Quantified by count ('EA').
     - FLANGES: Weld-neck (WN), Slip-on (SO), Blind (BL), Socket-weld (SW). Quantified by count ('EA').

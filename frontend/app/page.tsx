@@ -135,10 +135,24 @@ export default function Home() {
           </div>
 
           {/* PREVIEW PANEL */}
-          {/* If 'preview' exists, render the image tag */}
-          {preview && (
-            <div className="bg-white p-4 rounded-lg shadow-sm">
-              <img src={preview} alt="Preview" className="w-full object-contain rounded border" />
+          {preview && file && (
+            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+              <h3 className="text-sm font-semibold text-gray-500 mb-2">Source Document Preview</h3>
+              
+              {/* Check if the file is a PDF using its type or extension */}
+              {file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf') ? (
+                <iframe 
+                  src={preview} 
+                  className="w-full h-[600px] border rounded" 
+                  title="PDF Preview"
+                />
+              ) : (
+                <img 
+                  src={preview} 
+                  alt="Isometric Preview" 
+                  className="w-full h-96 object-contain rounded border bg-gray-50" 
+                />
+              )}
             </div>
           )}
         </div>
