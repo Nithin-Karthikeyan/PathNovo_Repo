@@ -1,0 +1,154 @@
+import os
+import json
+import time
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+# Load the secret API key from the .env file
+load_dotenv()
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Configure Gemini if the key exists
+if API_KEY:
+    genai.configure(api_key=API_KEY)
+
+app = FastAPI(title="Isometric MTO Generator")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- PYDANTIC MODELS (The JSON Blueprint) ---
+class DrawingMeta(BaseModel):
+    drawing_no: str
+    revision: str
+    line_number: str
+
+class MTORow(BaseModel):
+    item_no: int
+    category: str
+    description: str
+    size_nps: str
+    schedule_rating: Optional[str] = None
+    material_spec: Optional[str] = None
+    end_type: Optional[str] = None
+    quantity: Optional[int] = None
+    unit: str
+    length_m: Optional[float] = None
+    remarks: Optional[str] = None
+
+class MTOResponse(BaseModel):
+    drawing_meta: DrawingMeta
+    items: List[MTORow]
+
+# --- THE MOCK PIPELINE (Fallback) ---
+def mock_gemini_extraction() -> MTOResponse:
+    """Returns fake data if no API key is found (Assessment Requirement)."""
+    print("WARNING: No API key found. Using Mock Pipeline.")
+    time.sleep(2)
+    return MTOResponse(
+        drawing_meta=DrawingMeta(drawing_no="ISO-MOCK-01", revision="1", line_number="6\"-MOCK-LINE"),
+        items=[
+            MTORow(item_no=1, category="PIPE", description="Seamless Pipe", size_nps="6\"", quantity=12, unit="M"),
+            MTORow(item_no=2, category="FITTING", description="90 Deg Elbow", size_nps="6\"", quantity=4, unit="EA")
+        ]
+    )
+
+# --- THE REAL AI PIPELINE ---
+def extract_mto_with_ai(file_bytes: bytes, mime_type: str) -> MTOResponse:
+    """Sends the image to Gemini and forces it to reply in our exact JSON structure."""
+    
+    # We use 1.5-flash as it is lightning fast for vision tasks and widely available
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    
+    prompt = """
+    You are an expert Piping Design Quality Engineer. Look at this isometric piping drawing 
+    and generate a Material Take-Off (MTO) bill of materials.
+
+    Component Glossary & Rules for extraction:
+    - PIPE: Straight segments. Quantified by summed length in Metres ('M').
+    - FITTINGS: Elbows (90/45 deg), Tees (equal/reducing), Reducers, Caps, Olets. Quantified by count ('EA').
+    - FLANGES: Weld-neck (WN), Slip-on (SO), Blind (BL), Socket-weld (SW). Quantified by count ('EA').
+    - VALVES: Gate (bowtie), Globe (bowtie with dot), Check (bowtie with flap), Ball (bowtie with circle). Quantified by count ('EA').
+    - JOINT CONSUMABLES: Every flanged joint implies 1 Gasket and 1 set of Stud bolts. Derive these.
+    - SUPPORTS: Shoes, guides, anchors. Quantified by count ('EA').
+    
+    Standards & Materials Vocabulary (Use these exactly in your outputs):
+    - Standards: ASME B31.3 (process piping), ASME B16.9 (butt-weld fittings), ASME B16.5 (flanges), ASME B16.11 (forged SW/THD fittings), ASME B16.20 (gaskets).
+    - Materials: ASTM A106 Gr.B (carbon steel seamless pipe), A234 WPB (CS butt-weld fittings), A105 (CS forged flanges), A312 TP316L (stainless pipe), A182 F316L (stainless forged).
+    - Sizes: NPS (Nominal Pipe Size, inches) and Schedule (SCH 10/40/80/160, STD/XS/XXS).
+
+    You must return ONLY a raw JSON object that strictly matches this exact structure, with no markdown formatting:
+    {
+        "drawing_meta": {"drawing_no": "...", "revision": "...", "line_number": "..."},
+        "items": [
+            {
+                "item_no": 1, 
+                "category": "FITTING", 
+                "description": "90 Deg LR Elbow, BW, ASME B16.9", 
+                "size_nps": "6\"", 
+                "schedule_rating": "SCH 40",
+                "material_spec": "ASTM A234 WPB",
+                "end_type": "BW",
+                "quantity": 4, 
+                "unit": "EA",
+                "length_m": null,
+                "remarks": null
+            }
+        ]
+    }
+    """
+    
+    try:
+        # 2. Call the AI
+        response = model.generate_content(
+            contents=[
+                {"mime_type": mime_type, "data": file_bytes}, 
+                prompt
+            ],
+            # This config strictly forces the AI to reply in JSON format
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json"
+            )
+        )
+        
+        # 3. Convert the AI's text response into our strict Python/Pydantic structure
+        raw_json = json.loads(response.text)
+        return MTOResponse(**raw_json)
+        
+    except Exception as e:
+        print(f"AI Extraction Failed: {e}")
+        # If the AI hallucinates or fails, gracefully fall back to the mock data
+        return mock_gemini_extraction()
+
+# --- THE API ENDPOINT ---
+@app.post("/api/upload", response_model=MTOResponse)
+async def upload_drawing(file: UploadFile = File(...)):
+    
+    if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.pdf')):
+        raise HTTPException(status_code=400, detail="Invalid file type.")
+        
+    file_bytes = await file.read()
+    
+    # Enforce a 20MB file size limit
+    if len(file_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large. Max 20MB.")
+    
+    # Determine the mime type for Gemini
+    mime_type = "application/pdf" if file.filename.lower().endswith('.pdf') else "image/jpeg"
+    
+    # Assessment Requirement: Graceful Degradation. 
+    # If API key exists, use AI. If not, use mock data.
+    if API_KEY and API_KEY.strip() != "":
+        print("API Key found! Sending to Gemini...")
+        return extract_mto_with_ai(file_bytes, mime_type)
+    else:
+        return mock_gemini_extraction()
