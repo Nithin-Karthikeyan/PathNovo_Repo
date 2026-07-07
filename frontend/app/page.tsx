@@ -102,7 +102,7 @@ export default function Home() {
     <main className="min-h-screen bg-gray-50 text-gray-900 font-sans pb-10">
       <header className="bg-[#003366] text-white p-6 shadow-md">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold tracking-wider">TENARIS <span className="font-light">| MTO Vision AI</span></h1>
+          <h1 className="text-2xl font-bold tracking-wider">Nithin <span className="font-light">| Pathnovo Assessment</span></h1>
         </div>
       </header>
 
