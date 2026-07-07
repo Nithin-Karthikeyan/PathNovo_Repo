@@ -82,7 +82,7 @@ source venv/bin/activate
 pip install requirements.txt
 
 # set up env vars
-cp .env.example .env
+cp .env
 # add your GEMINI_API_KEY to .env
 
 # run it
@@ -94,7 +94,7 @@ Runs on `http://localhost:8000`
 
 ```bash
 cd frontend
-npm install
+npm install # Use TailWind
 npm run dev
 ```
 Runs on `http://localhost:3000`
