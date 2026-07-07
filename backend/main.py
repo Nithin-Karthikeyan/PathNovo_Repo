@@ -46,8 +46,10 @@ class MTORow(BaseModel):
     remarks: Optional[str] = None
 
 class MTOResponse(BaseModel):
-    drawing_meta: DrawingMeta
-    items: List[MTORow]
+    is_valid: bool
+    error_message: Optional[str] = None
+    drawing_meta: Optional[DrawingMeta] = None
+    items: List[MTORow] = []
 
 # --- THE MOCK PIPELINE (Fallback) ---
 def mock_gemini_extraction() -> MTOResponse:
@@ -69,11 +71,22 @@ def extract_mto_with_ai(file_bytes: bytes, mime_type: str) -> MTOResponse:
     # We use 1.5-flash as it is lightning fast for vision tasks and widely available
     model = genai.GenerativeModel('gemini-2.5-flash')
     
+    # 1. THE PROMPT (Updated with Gatekeeper Validation)
     prompt = """
-    You are an expert Piping Design Quality Engineer. Look at this isometric piping drawing 
-    and generate a Material Take-Off (MTO) bill of materials.
+    You are an expert Piping Design Quality Engineer. Look at the uploaded image.
 
-    Component Glossary & Rules for extraction:
+    STEP 1: VALIDATION
+    First, determine if the image is actually a piping isometric drawing or P&ID. 
+    If it is NOT a valid piping drawing (e.g., a random photo, a person, a landscape), you must abort extraction and return this exact JSON:
+    {
+        "is_valid": false,
+        "error_message": "Invalid file: The uploaded image does not appear to be a piping isometric drawing.",
+        "drawing_meta": null,
+        "items": []
+    }
+
+    STEP 2: EXTRACTION
+    If the image IS a valid piping drawing, generate a Material Take-Off (MTO) bill of materials using these rules:
     - PIPE: Straight segments. Quantified by summed length in Metres ('M').
     - FITTINGS: Elbows (90/45 deg), Tees (equal/reducing), Reducers, Caps, Olets. Quantified by count ('EA').
     - FLANGES: Weld-neck (WN), Slip-on (SO), Blind (BL), Socket-weld (SW). Quantified by count ('EA').
@@ -81,13 +94,15 @@ def extract_mto_with_ai(file_bytes: bytes, mime_type: str) -> MTOResponse:
     - JOINT CONSUMABLES: Every flanged joint implies 1 Gasket and 1 set of Stud bolts. Derive these.
     - SUPPORTS: Shoes, guides, anchors. Quantified by count ('EA').
     
-    Standards & Materials Vocabulary (Use these exactly in your outputs):
-    - Standards: ASME B31.3 (process piping), ASME B16.9 (butt-weld fittings), ASME B16.5 (flanges), ASME B16.11 (forged SW/THD fittings), ASME B16.20 (gaskets).
-    - Materials: ASTM A106 Gr.B (carbon steel seamless pipe), A234 WPB (CS butt-weld fittings), A105 (CS forged flanges), A312 TP316L (stainless pipe), A182 F316L (stainless forged).
-    - Sizes: NPS (Nominal Pipe Size, inches) and Schedule (SCH 10/40/80/160, STD/XS/XXS).
+    Standards & Materials Vocabulary:
+    - Standards: ASME B31.3, ASME B16.9, ASME B16.5, ASME B16.11, ASME B16.20.
+    - Materials: ASTM A106 Gr.B, A234 WPB, A105, A312 TP316L, A182 F316L.
+    - Sizes: NPS and Schedule (SCH 10/40/80/160, STD/XS/XXS).
 
-    You must return ONLY a raw JSON object that strictly matches this exact structure, with no markdown formatting:
+    For valid drawings, you must return ONLY a raw JSON object that strictly matches this exact structure, with no markdown formatting:
     {
+        "is_valid": true,
+        "error_message": null,
         "drawing_meta": {"drawing_no": "...", "revision": "...", "line_number": "..."},
         "items": [
             {

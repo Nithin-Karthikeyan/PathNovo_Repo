@@ -1,65 +1,192 @@
-import Image from "next/image";
+// This tells Next.js to run this code in the user's browser, not on the server.
+'use client';
 
+// Importing the tool that lets us create UI-updating variables (State)
+import { useState } from 'react';
+
+// --- TYPESCRIPT BLUEPRINTS ---
+// This tells the frontend exactly what the FastAPI JSON will look like.
+// The question mark (?) means the field is optional (can be null or undefined).
+// --- TYPES (Matching your Python backend) ---
+type DrawingMeta = { drawing_no: string; revision: string; line_number: string };
+
+type MTORow = {
+  item_no: number; category: string; description: string; size_nps: string;
+  schedule_rating?: string; material_spec?: string; end_type?: string;
+  quantity?: number; unit: string; length_m?: number; remarks?: string;
+};
+
+// NEW: Updated to match the gatekeeper logic
+type MTOResponse = { 
+  is_valid: boolean; 
+  error_message?: string | null;
+  drawing_meta?: DrawingMeta | null; 
+  items: MTORow[]; 
+};
+
+// This is the main function that builds the web page.
 export default function Home() {
+  
+  // --- STATE VARIABLES ---
+  // syntax: const [variableName, functionToUpdateVariable] = useState<Type>(InitialValue);
+  const [file, setFile] = useState<File | null>(null); // Stores the uploaded PDF/Image
+  const [preview, setPreview] = useState<string | null>(null); // Stores the local URL to show the image
+  const [loading, setLoading] = useState(false); // True when waiting for Gemini
+  const [error, setError] = useState<string | null>(null); // Stores error messages
+  const [result, setResult] = useState<MTOResponse | null>(null); // Stores the final JSON table
+
+  // --- FILE HANDLING FUNCTION ---
+  // Triggered whenever the user selects a file from their computer
+  const handleFileChange = (selectedFile: File | null) => {
+    setError(null); // Clear old errors
+    setResult(null); // Clear old tables
+    
+    // If they clicked "Cancel" in the file picker, do nothing
+    if (!selectedFile) return; 
+
+    // Validation: 20MB is 20 * 1024 kilobytes * 1024 bytes.
+    if (selectedFile.size > 20 * 1024 * 1024) {
+      setError("File is too large. Maximum size is 20MB.");
+      return;
+    }
+    
+    // Save the file to our state variable
+    setFile(selectedFile);
+    // URL.createObjectURL creates a temporary local link so we can display the image immediately
+    setPreview(URL.createObjectURL(selectedFile)); 
+  };
+
+  // --- API SUBMISSION FUNCTION ---
+  const handleUpload = async () => {
+    if (!file) return;
+    
+    setLoading(true); // Turns on the loading spinner UI
+    setError(null);
+
+    // FormData is the browser's native way to package files for sending over the internet
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      // Send the POST request to the FastAPI server running on port 8000
+      const res = await fetch("http://localhost:8000/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      // If FastAPI returns a 400 or 500 error, throw it so the catch block handles it
+      if (!res.ok) throw new Error(await res.text());
+      
+      // Parse the JSON string into a structured JavaScript object
+      const data: MTOResponse = await res.json();
+
+      if (!data.is_valid) {
+        setError(data.error_message || "Invalid Image Detected. NOT A PIPING DRAWING")
+        return 
+      }
+      
+      // Save the data, which triggers the UI to draw the table
+      setResult(data); 
+
+    } catch (err: any) {
+      // If the backend crashes, display the error to the user
+      setError(err.message || "An error occurred during processing.");
+    } finally {
+      // Whether it succeeded or failed, turn off the loading spinner
+      setLoading(false); 
+    }
+  };
+
+  // --- HTML UI RENDERING ---
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+    // 'className' is how we apply Tailwind CSS styles. 
+    // 'min-h-screen' = height 100vh, 'bg-gray-50' = light gray background.
+    <main className="min-h-screen bg-gray-50 text-gray-900 font-sans">
+      
+      <div className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-8 mt-6">
+        
+        {/* LEFT COLUMN */}
+        <div className="lg:col-span-1 space-y-6">
+          <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h2 className="text-lg font-semibold text-[#003366] mb-4">Upload Drawing</h2>
+            
+            {/* FILE INPUT */}
+            <input 
+              type="file" 
+              accept=".png,.jpg,.jpeg,.pdf" 
+              // 'e.target.files' is the array of files the user selected. We grab the first one [0].
+              onChange={(e) => handleFileChange(e.target.files?.[0] || null)}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            
+            {/* CONDITIONAL RENDERING */}
+            {/* If the 'error' variable is NOT null, it renders the <p> tag. */}
+            {error && <p className="text-red-600 text-sm font-medium mb-4">{error}</p>}
+            
+            {/* BUTTON */}
+            <button 
+              onClick={handleUpload} 
+              // The button is disabled if 'file' is null OR 'loading' is true
+              disabled={!file || loading}
+              className="w-full bg-[#FF6600] text-white font-bold py-3 rounded-md hover:bg-[#CC5200] disabled:opacity-50"
+            >
+              {/* Uses a ternary operator (condition ? true : false) to change the text */}
+              {loading ? "Processing AI Extraction..." : "Extract MTO"}
+            </button>
+          </div>
+
+          {/* PREVIEW PANEL */}
+          {/* If 'preview' exists, render the image tag */}
+          {preview && (
+            <div className="bg-white p-4 rounded-lg shadow-sm">
+              <img src={preview} alt="Preview" className="w-full object-contain rounded border" />
+            </div>
+          )}
         </div>
-      </main>
-    </div>
+
+        {/* RIGHT COLUMN */}
+        <div className="lg:col-span-2 space-y-6">
+          
+          {/* LOADING SPINNER */}
+          {loading && (
+            <div className="flex flex-col items-center justify-center h-full pt-20">
+              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#FF6600]"></div>
+            </div>
+          )}
+
+          {/* THE RESULTS TABLE */}
+          {/* Only render this if NOT loading and 'result' actually contains data */}
+          {!loading && result && (
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              
+              <h2 className="text-2xl font-bold">{result.drawing_meta?.drawing_no}</h2>
+              
+              <table className="min-w-full text-left text-sm border-collapse mt-4">
+                <thead className="bg-[#003366] text-white">
+                  <tr>
+                    <th className="p-3">Item</th>
+                    <th className="p-3">Category</th>
+                    <th className="p-3">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* .map() is a loop for arrays in JavaScript. 
+                      For every 'item' in the result.items array, it returns an HTML <tr> row. */}
+                  {result.items.map((item, idx) => (
+                    // In React, list items must have a unique 'key' attribute
+                    <tr key={idx} className="border-b border-gray-100">
+                      {/* We use curly braces { } to insert the data variables into the HTML */}
+                      <td className="p-3 font-medium">{item.item_no}</td>
+                      <td className="p-3">{item.category}</td>
+                      <td className="p-3">{item.description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
   );
 }
